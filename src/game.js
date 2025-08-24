@@ -478,9 +478,23 @@ k.scene("winner", ({ winner, winColor }) => {
         k.color(winColor)
     ]);
 
+    k.add([
+        k.text("Tap to replay", {
+            size: 40,
+            transform: (idx, ch) => ({
+                pos: vec2(0, wave(-4, 4, time() * 4 + idx * 0.5)),
+                scale: wave(1, 1.2, time() * 3 + idx),
+                angle: wave(-9, 9, time() * 3 + idx),
+            }),
+        }),
+        k.pos(k.width() / 2, k.height() / 2 + 200),
+        k.anchor("center"),
+        k.color(winColor)
+    ]);
+
     function addConfetti()
     {
-        const DEF_COUNT = 80;
+        const DEF_COUNT = 100;
         const DEF_GRAVITY = 800;
         const DEF_AIR_DRAG = 0.9;
         const DEF_VELOCITY = [1000, 4000];
@@ -493,20 +507,21 @@ k.scene("winner", ({ winner, winColor }) => {
 
         const sample = (s) => typeof s === "function" ? s() : s;
         for (let i = 0; i < DEF_COUNT; i++) {
-            const p = add([
-                pos(sample(vec2(rand(0, k.width()), rand(0, k.height())))),
+            const p = k.add([
+                k.pos(sample(k.vec2(rand(0, k.width()), rand(0, k.height())))),
                 choose([
-                    rect(rand(5, 20), rand(5, 20)),
-                    circle(rand(3, 10)),
+                    k.rect(rand(5, 20), rand(5, 20)),
+                    k.circle(rand(3, 10)),
                 ]),
-                color(
+                k.color(
                     sample(hsl2rgb(rand(0, 1), DEF_SATURATION, DEF_LIGHTNESS)),
                 ),
-                opacity(1),
-                lifespan(4),
-                scale(1),
-                anchor("center"),
-                rotate(rand(0, 360)),
+                k.opacity(1),
+                k.lifespan(4),
+                k.offscreen(),
+                k.scale(1),
+                k.anchor("center"),
+                k.rotate(rand(0, 360)),
             ]);
 
             const spin = rand(DEF_SPIN[0], DEF_SPIN[1]);
@@ -533,7 +548,7 @@ k.scene("winner", ({ winner, winColor }) => {
                 p.opacity -= fade * dt();
                 velX *= airDrag;
                 velY *= airDrag;
-                p.scale.x = wave(-1, 1, time() * spin);
+                p.scale.x = k.wave(-1, 1, time() * spin);
             });
         }
     }

@@ -22,5 +22,5 @@ export default defineConfig({
             }
         })
     ],
-    base: '/chain-reaction/' // For GitHub Pages compatibility
+    base: './' // For GitHub Pages compatibility
 });
