@@ -13,6 +13,18 @@ let numPlayers = 2;
 let randomOn = false;
 let hdGrid = false;
 
+const colors = [
+    k.rgb(255, 215, 0), // Golden yellow
+    k.rgb(0, 0, 255), // Blue
+    k.rgb(255, 0, 0), // Red
+    k.rgb(255, 255, 255), // White
+    k.rgb(0, 255, 0), // Green
+    k.rgb(255, 0, 255), // Fuchsia
+    k.rgb(0, 255, 255), // Aqua
+    k.rgb(255, 128, 0), // Orange
+    k.rgb(0, 128, 255), // Light Blue
+    k.rgb(128, 255, 0), // Light Greem
+];
 
 
 // ---------------- MENU SCENE ----------------
@@ -229,19 +241,6 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
 
     let currentPlayerIdx = 0;
     let currentPlayer = currentPlayers[currentPlayerIdx];
-
-    const colors = [
-        k.rgb(255, 0, 0),
-        k.rgb(0, 255, 0),
-        k.rgb(0, 0, 255),
-        k.rgb(255, 255, 0),
-        k.rgb(255, 0, 255),
-        k.rgb(0, 255, 255),
-        k.rgb(255, 128, 0),
-        k.rgb(128, 0, 255),
-        k.rgb(0, 128, 255),
-        k.rgb(128, 255, 0),
-    ];
 
     // ---- Add a perspective wireframe grid that's adjustable ----
     function wireframeBox(opts = {}) {
