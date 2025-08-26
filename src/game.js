@@ -5,16 +5,19 @@ const k = kaplay({
     height: 1600, // 16*100
     canvas: document.getElementById("game"),
     letterbox: true,
+    pixelDensity: 2,
+    maxFPS: 45,
     background: [0, 0, 0],
     debug: false,
 });
+k.setLayers(["game", "overlay"], "game");
 
 let numPlayers = 2;
 let randomOn = false;
 let hdGrid = false;
 
 const colors = [
-    k.rgb(255, 215, 0), // Golden yellow
+    k.rgb(255, 255, 0), // yellow
     k.rgb(0, 0, 255), // Blue
     k.rgb(255, 0, 0), // Red
     k.rgb(255, 255, 255), // White
@@ -29,7 +32,6 @@ const colors = [
 
 // ---------------- MENU SCENE ----------------
 k.scene("menu", () => {
-    numPlayers = 2; // Always start at 2
     let dragging = false;
 
     k.add([k.text("Chain Reaction!", { size: 64 }), k.pos(k.width() / 2, 150), k.anchor("center"), k.color(255, 255, 255)]);
@@ -37,9 +39,14 @@ k.scene("menu", () => {
     // Slider display
     k.add([k.text("Select # Players", { size: 36 }), k.pos(k.width() / 2, 420), k.anchor("center"), k.color(255,255,255)]);
     // Slider track
-    const track = k.add([k.rect(400, 8), k.pos(k.width() / 2, 500), k.anchor("center"), k.color(100,100,100)]);
+    const maxPlayers = 10;
+    const trackWidth = 400;
+    const trackStart = k.width() / 2 - trackWidth / 2;
+    const trackEnd = k.width() / 2  + trackWidth / 2;
+    const handleStart = trackStart + ((numPlayers - 2) * trackWidth / (maxPlayers - 2));
+    const track = k.add([k.rect(trackWidth, 8), k.pos(k.width() / 2, 500), k.anchor("center"), k.color(100,100,100)]);
     // Slider handle
-    const handle = k.add([k.rect(16, 48), k.pos(k.width() / 2 - 200, 500), k.anchor("center"), k.color(0,200,255), k.area()]);
+    const handle = k.add([k.rect(30, 48), k.pos(handleStart, 500), k.anchor("center"), k.color(0,200,255), k.area()]);
     // Display text
     const label = k.add([k.text(`Players: ${numPlayers}`, { size: 48 }), k.anchor("center"), k.pos(k.width() / 2, 620)]);
 
@@ -53,12 +60,12 @@ k.scene("menu", () => {
     k.onUpdate(() => {
         if (dragging) {
             let x = k.mousePos().x;
-            x = Math.max(250, Math.min(650, x)); // clamp to track
+            x = Math.max(trackStart, Math.min(trackEnd, x)); // clamp to track
             handle.pos.x = x;
 
-            // Map to range 2–10
-            const ratio = (x - 250) / (650 - 250);
-            numPlayers = 2 + Math.round(ratio * 8);
+            // Map to range 2–maxPlayers
+            const ratio = (x - trackStart) / (trackWidth);
+            numPlayers = 2 + Math.round(ratio * (maxPlayers - 2));
             label.text = `Players: ${numPlayers}`;
         }
     });
@@ -76,7 +83,7 @@ k.scene("menu", () => {
         randomBox.color = getStatusColor(randomOn);
     });
 
-    const gridBox = k.add([k.rect(300, 40), k.pos(k.width() / 2, 900), k.anchor("center"), k.color(getStatusColor(hdGrid)), k.area(), "grid"]);
+    const gridBox = k.add([k.rect(300, 50), k.pos(k.width() / 2, 900), k.anchor("center"), k.color(getStatusColor(hdGrid)), k.area(), "grid"]);
     gridBox.add([k.text("HD Grid", { size: 40 }), k.pos(0, 0), k.anchor("center")]);
     gridBox.onClick(() => {
         hdGrid = !hdGrid;
@@ -108,8 +115,10 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
     const RADIUS = hdGrid ? 9 : 14;
     const ORBIT_RADIUS = hdGrid ? 5 : 12;
 
+    let inExitOverlay = false;
     let centers = []
     let cells = []
+    let currentNumPlayers = numPlayers;
     let currentPlayers = [...Array(numPlayers).keys()]
 
     class Cell {
@@ -147,7 +156,7 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
 
         select(player, override = false)
         {
-            console.log("Select called: ", player, this, cells);
+            // console.log("Select called: ", player, this, cells);
             if (player !== this.player && this.player !== -1 && !override)
                 return false;
             this.player = player;
@@ -155,7 +164,7 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
 
             if (this.count < (this.neighbours.length - 1))
             {
-                console.log("Selected", this.x, this.y, "Neigh", this.neighbours);
+                // console.log("Selected", this.x, this.y, "Neigh", this.neighbours);
                 this.count += 1;
                 return true;
             }
@@ -174,15 +183,13 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
             return false;
         }
 
-        draw(t)
+        draw(time)
         {
             if (this.count === 0) return;
 
-            // console.log("Drawing: ", this.x, this.y, this.p);
-
             const critical =  (this.count >= (this.neighbours.length - 1));
-            const shakeX = critical ? Math.sin(t * CELL_SIZE / 2) * 2 : 0  // fast oscillation, ±2px
-            const shakeY = critical ? Math.cos(t * CELL_SIZE / 2) * 2 : 0
+            const shakeX = critical ? Math.sin(time * CELL_SIZE / 2) * 2 : 0  // fast oscillation, ±2px
+            const shakeY = critical ? Math.cos(time * CELL_SIZE / 2) * 2 : 0
 
             const color = colors[this.player];
             if (this.count === 1)
@@ -194,7 +201,7 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
             {
                 // N orbiting circles
                 for (let i = 0; i < this.count; i++) {
-                    const angle = t + i * (Math.PI * 2) / this.count // evenly spaced
+                    const angle = time + i * (Math.PI * 2) / this.count // evenly spaced
                     const off = k.vec2(
                         Math.cos(angle) * ORBIT_RADIUS + shakeX,
                         Math.sin(angle) * ORBIT_RADIUS * 0.5 + shakeY
@@ -217,7 +224,14 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
                 k.vec2(0, -1),
             ]
 
-            for (const dir of dirs) {
+            for (const dir of dirs)
+            {
+                // Only burst in valid directions!
+                let nx = dir.x + this.x;
+                let ny = dir.y + this.y;
+                if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS)
+                    continue;
+
                 const orb = k.add([
                     k.circle(RADIUS),
                     k.color(this.color),
@@ -254,7 +268,7 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
             rotZ = 0.0,       // rotate box around Z (radians)
             fov = 60,         // field of view (degrees)
             camDist = 900,    // camera distance from origin (world units)
-            center = k.vec2(k.width() / 2, k.height() / 2 + 40), // screen anchor
+            center = k.vec2(k.width() / 2, k.height() / 2), // screen anchor
             color = colors[currentPlayer], // neon green
             lineWidth = 2,
         } = opts
@@ -327,25 +341,21 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
             // Try to initialize if its random
             if (randomOn)
             {
-                function randomIntFromInterval(min, max)
-                { // min and max included
-                    return Math.floor(Math.random() * (max - min + 1) + min);
+                // flatten 2D array -> [cell1, cell2, ...]
+                const arr = cells.flat();
+
+                // shuffle (Fisher–Yates)
+                for (let i = arr.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [arr[i], arr[j]] = [arr[j], arr[i]];
                 }
 
-                const numCells = COLS * ROWS / numPlayers / 2;
-                for (let p = 0; p < numPlayers; p++)
+                // how many each player gets
+                const perPlayer = Math.floor(arr.length / numPlayers);
+                for(let i = 0; i < (perPlayer * numPlayers); i++)
                 {
-                    let c = 0;
-                    while(c < numCells)
-                    {
-                        const rx = randomIntFromInterval(0, COLS - 1);
-                        const ry = randomIntFromInterval(0, ROWS - 1);
-                        if (cells[rx][ry].select(p, true))
-                        {
-                            console.log(p, rx, ry)
-                            c += 1;
-                        }
-                    }
+                    const p = Math.floor(i / perPlayer);
+                    arr[i].select(p, true);
                 }
             }
         }
@@ -378,9 +388,12 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
         }
     }
 
-    k.onMousePress(() => {
+    function handleMousePress()
+    {
         const mx = k.mousePos().x;
         const my = k.mousePos().y;
+
+        if (inExitOverlay) return;
 
         // find nearest cell center
         let best = null
@@ -393,37 +406,129 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
             }
         }
 
-        console.log("Got click: ", mx, my, bestDist, best)
-
         if (best && bestDist < 36)
         {
             const cell = cells[best.x][best.y];
             console.assert(cell !== undefined, "Undefined cell for best", {cells: cells, best: best});
             if (cell.select(currentPlayer))
             {
-                const playersLeft = [...new Set(cells.flat().map((c) => c.player))];
+                const playersLeft = [...new Set(cells.flat().map((c) => c.player))].filter(player => player !== -1);
                 const count = cells.flat().map((c) => c.count).reduce((a, b) => a + b, 0);
                 playersLeft.sort();
-                if (playersLeft.length === 2 && count > numPlayers)
+                if (playersLeft.length === 1 && count > currentNumPlayers)
                 {
-                    const winner = playersLeft[1];
+                    const winner = playersLeft[0];
                     console.log(winner, "has won! ");
                     k.go("winner", { winner: winner + 1, winColor: colors[winner]});
                 }
-                else if (playersLeft.length === numPlayers && count > numPlayers)
+                else if (playersLeft.length < currentNumPlayers && count > currentNumPlayers)
                 {
-                    numPlayers -= 1;
-                    currentPlayers = playersLeft.slice(1);
+                    currentNumPlayers = playersLeft.length;
+                    currentPlayers = playersLeft;
                     currentPlayerIdx = currentPlayers.indexOf(currentPlayer);
                 }
 
-                currentPlayerIdx = (currentPlayerIdx + 1) % numPlayers;
+                currentPlayerIdx = (currentPlayerIdx + 1) % currentNumPlayers;
                 currentPlayer = currentPlayers[currentPlayerIdx];
             }
         }
-    })
+    }
 
-    k.onUpdate(() => {
+    function showConfirmOverlay() {
+        // Dark background
+        const backdrop = k.add([
+            k.rect(k.width(), k.height()),
+            k.opacity(0.8),
+            k.color(0, 0, 0),   // semi-transparent
+            k.pos(0, 0),
+            k.layer("overlay"),
+            "overlay",
+        ]);
+
+        const rectHeight = 250 + (50 * numPlayers);
+
+        // Popup box
+        const box = k.add([
+            k.rect(600, rectHeight, { radius: 8 }),
+            k.color(64, 64, 64),
+            k.pos(k.width() / 2, k.height() / 2),
+            k.anchor("center"),
+            k.outline(2),
+            k.layer("overlay"),
+            "overlay",
+        ]);
+
+        // Confirmation text
+        box.add([
+            k.text("Are you sure you want to exit?", { size: 28 }),
+            k.color(255,255,255),
+            k.pos(0, -rectHeight / 2 + 50),
+            k.anchor("center"),
+            k.layer("overlay"),
+            "overlay",
+        ]);
+
+        // Yes button
+        const yesBtn = box.add([
+            k.rect(100, 40),
+            k.pos(-120, -rectHeight / 2 + 120),
+            k.anchor("center"),
+            k.color(100, 255, 100),
+            k.area(),
+            layer("overlay"),
+            "overlay",
+        ]);
+        yesBtn.add([k.text("Yes", { size: 18 }), k.pos(0, 0), k.anchor("center"), k.color(0,0,0)]);
+
+        yesBtn.onClick(() => {
+            go("menu"); // or close game, etc.
+        });
+
+        // No button
+        const noBtn = box.add([
+            k.rect(100, 40),
+            k.pos(120, -rectHeight / 2 + 120),
+            k.anchor("center"),
+            k.color(255, 100, 100),
+            k.area(),
+            k.layer("overlay"),
+            "overlay",
+        ]);
+        noBtn.add([k.text("No", { size: 18 }), k.pos(0, 0), k.anchor("center"), k.color(0,0,0)]);
+
+        noBtn.onClick(() => {
+            destroyOverlay();
+        });
+
+        let playCount = Array(numPlayers).fill(0);
+        cells.flat().map((cell) => playCount[cell.player] += cell.count);
+        console.log(playCount);
+
+        for(let i = 0; i < playCount.length; i++)
+        {
+            console.log("Player " + (i+1) + " : " + playCount[i]);
+            box.add([
+                k.text("Player " + (i+1) + " : " + playCount[i], {size: 28}),
+                k.color(colors[i]),
+                k.anchor("bot"),
+                k.pos(0, -rectHeight / 2  + 180 + (i + 1) * 50),
+            ]);
+        }
+
+        inExitOverlay = true;
+        exitBtn.opacity = 0;
+    }
+
+    function destroyOverlay() {
+        // destroy all entities tagged as overlay
+        k.get("overlay").map((obj) => obj.destroy());
+        inExitOverlay = false;
+        exitBtn.opacity = 1;
+    }
+
+    ///// Main Game Structure and Event Loop ////
+    k.onDraw(() => {
+        wireframeBox();
         // animated rotating circles
         const t = k.time()
         for (const row of cells)
@@ -435,21 +540,21 @@ k.scene("game", ({ numPlayers, randomOn, hdGrid }) => {
         }
     });
 
-    k.onDraw(() => {
-        wireframeBox();
-    });
+    k.onMousePress(() => handleMousePress());
 
-    // Play Button
+    // Exit Button
     const exitBtn = k.add([
         k.pos(k.width(), 100),
         k.anchor("topright"),
         k.color(255, 255, 255),
+        k.opacity(1),
         k.area(),
         k.text("×", { size: 64 }),
     ]);
 
     exitBtn.onClick(() => {
-        k.go("menu");
+        if (!inExitOverlay)
+            showConfirmOverlay();
     });
 
     // Back to menu with Esc
