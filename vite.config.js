@@ -7,22 +7,36 @@ export default defineConfig({
             registerType: 'autoUpdate',
             includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
             manifest: {
-                name: 'ChainReaction Game',
-                short_name: 'Game',
-                description: "Simple local multiplayer chain reaction game",
+                id: '/',
+                name: 'Chain Reaction',
+                short_name: 'Chain Reaction',
+                description: 'Local multiplayer & vs-CPU chain reaction game — install and play offline.',
                 display: 'standalone',
-                background_color: '#000000',
-                theme_color: '#000000',
+                orientation: 'portrait',
+                background_color: '#08080f',
+                theme_color: '#08080f',
+                lang: 'en',
+                categories: ['games'],
+                start_url: './',
+                scope: './',
                 icons: [
                     {
                         src: 'android-chrome-192x192.png',
                         sizes: '192x192',
-                        type: 'image/png'
+                        type: 'image/png',
+                        purpose: 'any'
                     },
                     {
                         src: 'android-chrome-512x512.png',
                         sizes: '512x512',
-                        type: 'image/png'
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'android-chrome-512x512.png',
+                        sizes: '512x512',
+                        type: 'image/png',
+                        purpose: 'maskable'
                     }
                 ]
             }
