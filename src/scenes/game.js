@@ -235,7 +235,13 @@ k.scene("game", (opts) => {
         return fx;
     }
 
-    // explosion: a brief core flash, a shockwave ring, and directional sparks
+    // Explosion FX (flash + shockwave ring + directional sparks). Each effect is
+    // a live game object with per-frame callbacks, so a huge multi-wave cascade
+    // could spawn thousands at once and stutter. We cap the number of *rich*
+    // effects on screen; beyond that, cells still get a cheap flash (and the
+    // board/impact-pop still animate), so it stays lively but smooth.
+    let heavyFx = 0;
+    const FX_CAP = 44;
     function spawnBurst(cx, cy, player) {
         const p = centers[cx][cy];
         const col = colors[player];
@@ -251,6 +257,10 @@ k.scene("game", (opts) => {
             k.z(6),
         ]);
         k.tween(0.5, 1.7, 0.16, (v) => (flash.scale = k.vec2(v)), k.easings.easeOutQuad);
+
+        if (heavyFx >= FX_CAP) return; // saturated -> keep just the cheap flash
+        heavyFx++;
+        k.wait(0.5, () => (heavyFx = Math.max(0, heavyFx - 1)));
 
         ringFx(p, col, { speed: 300, life: 0.36, width: 3 });
 
@@ -310,7 +320,7 @@ k.scene("game", (opts) => {
         board[mx][my].owner = player;
         impactAt[mx][my] = k.time();
         spawnPop(mx, my, player);
-        audio.playClick();
+        audio.playPlace();
 
         let i = 0;
         const WAVE_DELAY = result.waves.length > 40 ? 0.05 : 0.09;
@@ -323,9 +333,10 @@ k.scene("game", (opts) => {
             }
             const wave = result.waves[i++];
             const now = k.time();
+            let waveFx = 0; // cap burst effects per wave so dense waves stay smooth
             for (const e of wave) {
                 board[e.x][e.y].count -= eng.mass[e.x][e.y];
-                spawnBurst(e.x, e.y, player);
+                if (waveFx++ < 16) spawnBurst(e.x, e.y, player);
                 for (const n of eng.neigh[e.x][e.y]) {
                     board[n.x][n.y].count += 1;
                     board[n.x][n.y].owner = player;

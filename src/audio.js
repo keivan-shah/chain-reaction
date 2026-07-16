@@ -1,22 +1,21 @@
 // ================================================================
-//  Tiny Web Audio engine: synthesized SFX (click / burst) + a looping
-//  background tune. Everything is generated in-browser, so there are no
-//  audio assets to bundle or license, and it works fully offline.
-//
-//  The tune is Beethoven's "Ode to Joy" — a public-domain melody —
-//  rendered with a soft synth, so it's recognisable and free to use.
+//  Tiny Web Audio engine: synthesized SFX (UI click, orb place, burst)
+//  + a looping, upbeat chiptune background track. Everything is generated
+//  in-browser, so there are no audio assets to bundle or license, and it
+//  works fully offline.
 // ================================================================
 
 let ctx = null;
 let master = null;
 let sfxGain = null;
 let musicGain = null;
+let musicFilter = null;
 const settings = { sfx: true, music: true };
 
 let musicPlaying = false;
 let schedTimer = null;
-let noteIdx = 0;
-let nextNoteTime = 0;
+let step = 0;
+let nextTime = 0;
 
 function ensureCtx() {
     if (ctx) {
@@ -32,8 +31,12 @@ function ensureCtx() {
     sfxGain = ctx.createGain();
     sfxGain.gain.value = 0.9;
     sfxGain.connect(master);
+    musicFilter = ctx.createBiquadFilter(); // tame harshness for a warm loop
+    musicFilter.type = "lowpass";
+    musicFilter.frequency.value = 2600;
     musicGain = ctx.createGain();
-    musicGain.gain.value = 0.22;
+    musicGain.gain.value = 0.2;
+    musicFilter.connect(musicGain);
     musicGain.connect(master);
     return ctx;
 }
@@ -52,7 +55,11 @@ if (typeof window !== "undefined") {
     window.addEventListener("touchstart", unlock, { passive: true });
 }
 
+const midiToFreq = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
 // ---- SFX ----
+
+// subtle UI tick for menu buttons
 export function playClick() {
     if (!settings.sfx) return;
     const c = ensureCtx();
@@ -61,16 +68,48 @@ export function playClick() {
     const o = c.createOscillator();
     const g = c.createGain();
     o.type = "triangle";
-    const base = 620 + Math.random() * 120; // a little variation = playful
-    o.frequency.setValueAtTime(base, t);
-    o.frequency.exponentialRampToValueAtTime(base * 0.6, t + 0.09);
+    o.frequency.setValueAtTime(520, t);
+    o.frequency.exponentialRampToValueAtTime(360, t + 0.06);
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.45, t + 0.005);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+    g.gain.exponentialRampToValueAtTime(0.28, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
     o.connect(g);
     g.connect(sfxGain);
     o.start(t);
-    o.stop(t + 0.15);
+    o.stop(t + 0.12);
+}
+
+// satisfying "pop" when an orb is placed (bright, upward blip + shimmer)
+export function playPlace() {
+    if (!settings.sfx) return;
+    const c = ensureCtx();
+    if (!c) return;
+    const t = c.currentTime;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(300, t);
+    o.frequency.exponentialRampToValueAtTime(680, t + 0.05); // upward "pop"
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.19);
+    o.connect(g);
+    g.connect(sfxGain);
+    o.start(t);
+    o.stop(t + 0.2);
+    // a little high shimmer on top
+    const o2 = c.createOscillator();
+    const g2 = c.createGain();
+    o2.type = "triangle";
+    o2.frequency.setValueAtTime(1000, t);
+    o2.frequency.exponentialRampToValueAtTime(1500, t + 0.04);
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.exponentialRampToValueAtTime(0.12, t + 0.006);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+    o2.connect(g2);
+    g2.connect(sfxGain);
+    o2.start(t);
+    o2.stop(t + 0.12);
 }
 
 export function playBurst() {
@@ -116,65 +155,79 @@ export function playBurst() {
     o.stop(t + 0.22);
 }
 
-// ---- Music: "Ode to Joy" (public domain), [midiNote, beats] ----
-const BPM = 108;
-const MELODY = [
-    [64, 1], [64, 1], [65, 1], [67, 1],
-    [67, 1], [65, 1], [64, 1], [62, 1],
-    [60, 1], [60, 1], [62, 1], [64, 1],
-    [64, 1.5], [62, 0.5], [62, 2],
-    [64, 1], [64, 1], [65, 1], [67, 1],
-    [67, 1], [65, 1], [64, 1], [62, 1],
-    [60, 1], [60, 1], [62, 1], [64, 1],
-    [62, 1.5], [60, 0.5], [60, 2],
+// ---- Music: an upbeat chiptune loop over an uplifting I–vi–IV–V progression ----
+const BPM = 128;
+const EIGHTH = 60 / BPM / 2;
+// four bars, each a chord (C major, A minor, F major, G major), lead an octave up
+const CHORDS = [
+    [60, 64, 67],
+    [57, 60, 64],
+    [53, 57, 60],
+    [55, 59, 62],
 ];
+const ARP = [0, 1, 2, 1, 0, 1, 2, 1]; // 8 eighth-notes per bar (bouncy up-down)
 
-function midiToFreq(m) {
-    return 440 * Math.pow(2, (m - 69) / 12);
-}
-
-function playNote(m, t, dur) {
-    if (!ctx) return;
-    const f = midiToFreq(m);
-    const rel = Math.min(0.14, dur * 0.4);
-    // main voice
+function leadNote(m, t, dur) {
     const o = ctx.createOscillator();
     const g = ctx.createGain();
     o.type = "triangle";
-    o.frequency.value = f;
+    o.frequency.value = midiToFreq(m);
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
-    g.gain.setValueAtTime(0.25, Math.max(t + 0.02, t + dur - rel));
+    g.gain.exponentialRampToValueAtTime(0.2, t + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     o.connect(g);
-    g.connect(musicGain);
+    g.connect(musicFilter);
     o.start(t);
-    o.stop(t + dur + 0.03);
-    // octave-below pad for warmth (always consonant)
-    const o2 = ctx.createOscillator();
-    const g2 = ctx.createGain();
-    o2.type = "sine";
-    o2.frequency.value = f / 2;
-    g2.gain.setValueAtTime(0.0001, t);
-    g2.gain.exponentialRampToValueAtTime(0.12, t + 0.03);
-    g2.gain.setValueAtTime(0.12, Math.max(t + 0.03, t + dur - rel));
-    g2.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o2.connect(g2);
-    g2.connect(musicGain);
-    o2.start(t);
-    o2.stop(t + dur + 0.03);
+    o.stop(t + dur + 0.02);
+}
+
+function bassNote(m, t, dur) {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.value = midiToFreq(m);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.32, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g);
+    g.connect(musicFilter);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+}
+
+function hat(t) {
+    const dur = 0.03;
+    const buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * dur)), ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+    const n = ctx.createBufferSource();
+    n.buffer = buf;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 7000;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.06, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(hp);
+    hp.connect(g);
+    g.connect(musicGain); // hats bypass the lowpass so they stay crisp
+    n.start(t);
+    n.stop(t + dur);
 }
 
 function scheduleLoop() {
     if (!musicPlaying || !ctx) return;
-    while (nextNoteTime < ctx.currentTime + 0.25) {
-        const [m, beats] = MELODY[noteIdx];
-        const dur = (beats * 60) / BPM;
-        playNote(m, nextNoteTime, dur);
-        nextNoteTime += dur;
-        noteIdx = (noteIdx + 1) % MELODY.length;
+    while (nextTime < ctx.currentTime + 0.3) {
+        const bar = Math.floor(step / 8) % CHORDS.length;
+        const s = step % 8;
+        const chord = CHORDS[bar];
+        leadNote(chord[ARP[s]] + 12, nextTime, EIGHTH * 0.9); // arpeggio, octave up
+        if (s === 0 || s === 4) bassNote(chord[0] - 12, nextTime, EIGHTH * 3.6); // groovy bass
+        if (s % 2 === 1) hat(nextTime); // off-beat hats for energy
+        nextTime += EIGHTH;
+        step++;
     }
-    schedTimer = setTimeout(scheduleLoop, 60);
+    schedTimer = setTimeout(scheduleLoop, 45);
 }
 
 export function startMusic() {
@@ -182,8 +235,8 @@ export function startMusic() {
     const c = ensureCtx();
     if (!c || musicPlaying) return;
     musicPlaying = true;
-    noteIdx = 0;
-    nextNoteTime = c.currentTime + 0.1;
+    step = 0;
+    nextTime = c.currentTime + 0.1;
     scheduleLoop();
 }
 
