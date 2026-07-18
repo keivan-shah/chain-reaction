@@ -1,20 +1,34 @@
 import { k, FONT_BOLD } from "../k.js";
-import { colors, UI } from "../theme.js";
-import { makeButton, fadeIn, dim, mix, blend } from "../ui.js";
-import { makeEngine, pickAIMove, randomFill } from "../engine.js";
+import { colors, UI, isColorblind } from "../theme.js";
+import { makeButton, fadeIn, dim, mix, blend, drawOrb, playerName } from "../ui.js";
+import { makeEngine, pickAIMove, randomFill, legalMoves } from "../engine.js";
 import { encodeState } from "../state.js";
 import { GRID_SIZES, clampSize } from "../grids.js";
+import { TIMER_OFF, timerSeconds, timerLabel, clampTimer } from "../timer.js";
+import { cfg, savePrefs } from "../prefs.js";
 import { writeSaveSlot, buildResumeUrl, clearSavedGame, showSaveModal, removeSaveModal } from "../storage.js";
+import { removeNameModal } from "../namedialog.js";
+import { removeMusicModal } from "../musicmodal.js";
+import { botName } from "../bots.js";
+import { recordMove, recordGameEnd } from "../stats.js";
+import { buzzBurst, buzzWin } from "../haptics.js";
 import * as audio from "../audio.js";
 
 k.scene("game", (opts) => {
     fadeIn();
+    removeNameModal(); // never let a menu dialog linger into the game
+    removeMusicModal();
     const saved = opts.saved || null;
     const numPlayers = saved ? saved.numPlayers : opts.numPlayers;
     const cpuCount = saved ? saved.cpuCount : opts.cpuCount;
     const difficulty = saved ? saved.difficulty : opts.difficulty;
     const size = clampSize(saved ? saved.size : opts.size);
     const randomOn = saved ? false : opts.randomOn;
+    // custom names are device-local: use the ones passed in, else this device's
+    // saved names (covers resume-from-link, which doesn't carry names)
+    const names = opts.names || cfg.names || [];
+    const reduceMotion =
+        typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const GS = GRID_SIZES[size];
     const CELL_SIZE = GS.cell;
     const COLS = GS.cols;
@@ -40,6 +54,27 @@ k.scene("game", (opts) => {
     let gameOver = false;
     let paused = false;               // freezes all progression while the menu overlay is open
     const undoStack = [];             // snapshots taken before each move, for Undo
+
+    // ----- optional per-turn timer -----
+    // A live global pref (also settable from the pause panel), deliberately NOT
+    // baked into the save code — a resumed game adopts your current timer setting.
+    // `timerSecs === 0` = Off. While a human is on the clock it counts down; when
+    // it hits zero we auto-play a random legal move (which may set off a cascade).
+    let timerIdx = clampTimer(opts.timer != null ? opts.timer : cfg.timer);
+    let timerSecs = timerSeconds(timerIdx);
+    let timeLeft = timerSecs;         // seconds remaining on the current turn
+    // don't run the clock during the opening fade-in — otherwise the first human
+    // turn silently loses ~0.4s before the board is really interactive
+    const readyAt = k.time() + 0.4;
+
+    // peak orb count each player has held at any single point this game (a fun
+    // "high-water mark" stat shown in the pause panel and final scoreboard). It's
+    // a per-session mark — resuming a saved game reseeds it from the board.
+    const peakOrbs = new Array(numPlayers).fill(0);
+    function trackPeak() {
+        const totals = eng.orbTotals(board, numPlayers);
+        for (let p = 0; p < numPlayers; p++) if (totals[p] > peakOrbs[p]) peakOrbs[p] = totals[p];
+    }
 
     // opt-in debug hook (only with ?debug in the URL) used by automated tests
     const DEBUG = (() => {
@@ -105,7 +140,9 @@ k.scene("game", (opts) => {
         const halfX = (COLS * cellSize) / 2;
         const halfY = (ROWS * cellSize) / 2;
         const halfZ = depth / 2;
-        hitRadius = (cellSize * f) / camDist * 0.62;
+        // 0.72 so a tap anywhere inside a cell's square (corner ≈ 0.707 of the
+        // spacing from centre) still lands, without bleeding far past the board
+        hitRadius = (cellSize * f) / camDist * 0.72;
 
         const wx = (ix) => ix * cellSize - halfX;
         const wy = (iy) => iy * cellSize - halfY;
@@ -152,6 +189,7 @@ k.scene("game", (opts) => {
         board = randomFill(eng, numPlayers);
         for (let p = 0; p < numPlayers; p++) moved.add(p);
     }
+    trackPeak(); // seed the high-water mark from the opening position
 
     // snapshot current match into a resume code
     function currentSaveCode() {
@@ -188,6 +226,7 @@ k.scene("game", (opts) => {
             currentPlayer,
             moved: new Set(moved),
             eliminated: new Set(eliminated),
+            peakOrbs: peakOrbs.slice(), // keep the high-water stat consistent with undo
             moveCount,
         });
         if (undoStack.length > 150) undoStack.shift();
@@ -207,7 +246,9 @@ k.scene("game", (opts) => {
         snap.moved.forEach((p) => moved.add(p));
         eliminated.clear();
         snap.eliminated.forEach((p) => eliminated.add(p));
+        if (snap.peakOrbs) for (let p = 0; p < numPlayers; p++) peakOrbs[p] = snap.peakOrbs[p];
         moveCount = snap.moveCount;
+        timeLeft = timerSecs; // don't punish the restored player with a stale clock
         syncSave();
         if (isCPU[currentPlayer]) maybeCPU(); // safety: never strand on a CPU turn
     }
@@ -288,6 +329,14 @@ k.scene("game", (opts) => {
         ringFx(centers[cx][cy], colors[player], { startR: RADIUS * 0.4, speed: 150, life: 0.28, width: 2 });
     }
 
+    // a distinct double-ring "time's up" ping so an auto-placed orb reads clearly
+    // as the clock firing rather than a move the player made
+    function spawnTimeoutFlash(cx, cy) {
+        const p = centers[cx][cy];
+        ringFx(p, UI.danger, { startR: RADIUS * 0.5, speed: 260, life: 0.42, width: 3.5, alpha: 0.95 });
+        ringFx(p, mix(UI.danger, 0.5), { startR: RADIUS * 0.5, speed: 170, life: 0.5, width: 2.5, alpha: 0.7 });
+    }
+
     // ----- turn / elimination bookkeeping -----
     function updateEliminations() {
         if (!allMoved()) return;
@@ -307,6 +356,7 @@ k.scene("game", (opts) => {
     }
 
     // ----- the move pipeline (shared by humans + AI) -----
+    let comboFx = null; // live "×N CHAIN!" popup during a cascade (fixed, off the shake)
     function applyMove(mx, my, player) {
         if (resolving || gameOver) return;
         resolving = true;
@@ -314,6 +364,33 @@ k.scene("game", (opts) => {
 
         const result = eng.simulateMove(board, mx, my, player, allMoved());
         moved.add(player);
+
+        // haptic accent on a cascade (never in all-CPU watch mode)
+        if (hasHuman && result.waves.length > 0) {
+            let cells = 0;
+            for (const w of result.waves) cells += w.length;
+            buzzBurst(cells);
+        }
+
+        // start a "×N CHAIN!" popup for a real chain reaction (fixed so it stays
+        // steady while the board shakes); step() counts it up and fades it out
+        if (comboFx) {
+            comboFx.destroy();
+            comboFx = null;
+        }
+        if (result.waves.length >= 3) {
+            comboFx = k.add([
+                k.text("", { size: 54, font: FONT_BOLD }),
+                k.pos(k.width() / 2, k.height() / 2 - 120),
+                k.anchor("center"),
+                k.color(colors[player]),
+                k.opacity(0),
+                k.scale(0.6),
+                k.fixed(),
+                k.layer("overlay"),
+                k.z(1200),
+            ]);
+        }
 
         // place the orb live with a pop
         board[mx][my].count += 1;
@@ -328,11 +405,29 @@ k.scene("game", (opts) => {
         function step() {
             if (i >= result.waves.length) {
                 board = result.board; // ensure exact final state
+                if (comboFx) {
+                    const c = comboFx; // pop + fade out the chain popup
+                    comboFx = null;
+                    if (!reduceMotion) k.tween(1.0, 1.4, 0.28, (v) => c.exists() && (c.scale = k.vec2(v)), k.easings.easeOutQuad);
+                    k.tween(1, 0, 0.35, (v) => c.exists() && (c.opacity = v), k.easings.easeOutQuad);
+                    k.wait(0.4, () => c.exists() && c.destroy());
+                }
                 finishMove(result, player);
                 return;
             }
             const wave = result.waves[i++];
             const now = k.time();
+            // screen shake scaled to the wave (k.shake accumulates across waves,
+            // so keep each call small); skip under reduced-motion
+            if (!reduceMotion && wave.length >= 2) k.shake(Math.min(4, 0.6 + wave.length * 0.35));
+            // count the chain popup up as it ripples (starts showing at ×2)
+            if (comboFx && i >= 2) {
+                const cf = comboFx; // capture: comboFx is nulled at cascade end
+                cf.text = `×${i} CHAIN!`;
+                cf.opacity = 1;
+                if (!reduceMotion)
+                    k.tween(1.25, 1.0, 0.16, (v) => cf.exists() && (cf.scale = k.vec2(v)), k.easings.easeOutQuad);
+            }
             let waveFx = 0; // cap burst effects per wave so dense waves stay smooth
             for (const e of wave) {
                 board[e.x][e.y].count -= eng.mass[e.x][e.y];
@@ -356,12 +451,19 @@ k.scene("game", (opts) => {
 
     function finishMove(result, player) {
         updateEliminations();
+        trackPeak(); // update each player's high-water orb count
+        if (!isCPU[player]) recordMove(result.waves); // records reflect the human's own moves
         resolving = false;
         moveCount++;
 
         if (allMoved() && result.winner !== null && !eliminated.has(result.winner)) {
             gameOver = true;
             clearSavedGame(); // finished — no resume link to leave behind
+            // only count games you actually played (skip all-CPU watch mode)
+            if (hasHuman) {
+                recordGameEnd({ difficulty, hadCPU: cpuCount > 0, youWon: result.winner === 0 });
+                buzzWin();
+            }
             const totals = eng.orbTotals(board, numPlayers);
             k.wait(0.3, () =>
                 k.go("winner", {
@@ -369,12 +471,21 @@ k.scene("game", (opts) => {
                     numPlayers,
                     isCPU,
                     totals,
+                    peaks: peakOrbs.slice(),
+                    // setup echoed back so the winner screen can offer a Rematch
+                    cpuCount,
+                    difficulty,
+                    size,
+                    randomOn,
+                    timer: timerIdx,
+                    names,
                 }),
             );
             return;
         }
 
         currentPlayer = nextPlayer();
+        timeLeft = timerSecs; // fresh countdown for whoever is up next
         syncSave(); // keep the URL + local save current after every move
         maybeCPU();
     }
@@ -394,6 +505,65 @@ k.scene("game", (opts) => {
                 maybeCPU();
             }
         });
+    }
+
+    // ----- per-turn timer -----
+    // The clock only runs on a live human turn: never while a cascade resolves,
+    // a CPU is thinking, the game is paused/over, or the exit panel is open.
+    function timerActive() {
+        return (
+            timerSecs > 0 &&
+            k.time() >= readyAt &&
+            !paused &&
+            !inExitOverlay &&
+            !gameOver &&
+            !resolving &&
+            !isCPU[currentPlayer]
+        );
+    }
+
+    // time's up → drop the current player's orb on a random legal cell. This is
+    // deliberately unfiltered: it can land on a near-critical cell and kick off a
+    // chain reaction that bursts other players (or the player's own) cells.
+    function autoPlaceRandom() {
+        if (resolving || gameOver || paused || inExitOverlay) return;
+        const moves = legalMoves(eng, board, currentPlayer);
+        if (moves.length === 0) {
+            // no legal cell (only if somehow eliminated) — pass the turn on
+            currentPlayer = nextPlayer();
+            timeLeft = timerSecs;
+            maybeCPU();
+            return;
+        }
+        const mv = moves[Math.floor(Math.random() * moves.length)];
+        spawnTimeoutFlash(mv.x, mv.y);
+        applyMove(mv.x, mv.y, currentPlayer);
+    }
+
+    k.onUpdate(() => {
+        if (!timerActive()) return;
+        timeLeft -= k.dt();
+        if (timeLeft <= 0) {
+            timeLeft = 0;
+            autoPlaceRandom();
+        }
+    });
+
+    // change / disable the timer live (from the pause panel). We update state
+    // every frame during a drag but defer the localStorage write to drag-release
+    // (persistTimerPref) so we don't hammer it ~60x/sec.
+    let timerDirty = false;
+    function setTimerIdx(idx) {
+        timerIdx = clampTimer(idx);
+        timerSecs = timerSeconds(timerIdx);
+        timeLeft = timerSecs; // apply to the current turn immediately
+        cfg.timer = timerIdx;
+        timerDirty = true;
+    }
+    function persistTimerPref() {
+        if (!timerDirty) return;
+        timerDirty = false;
+        savePrefs();
     }
 
     // ----- human input -----
@@ -430,30 +600,31 @@ k.scene("game", (opts) => {
         k.drawLine({ p1: a, p2: b, width: 5, color: col, opacity: 0.045 * shade });
         k.drawLine({ p1: a, p2: b, width: 1.8, color: col, opacity: 0.46 * shade });
     }
-    // A shaded sphere built from offset layers lit from the upper-left:
-    // ambient glow → dark rim → mid body → lit cap → specular hotspot.
-    const BLACK = k.rgb(0, 0, 0);
-    const WHITE = k.rgb(255, 255, 255);
-    function orb(p, col, r) {
-        k.drawCircle({ pos: p, radius: r * 1.5, color: col, opacity: 0.1 }); // ambient glow
-        k.drawCircle({ pos: p, radius: r, color: blend(col, BLACK, 0.42) }); // dark rim
-        k.drawCircle({ pos: p.add(k.vec2(-r * 0.16, -r * 0.18)), radius: r * 0.85, color: col }); // body
-        k.drawCircle({
-            pos: p.add(k.vec2(-r * 0.26, -r * 0.3)),
-            radius: r * 0.5,
-            color: blend(col, WHITE, 0.26),
-        }); // lit cap
-        k.drawCircle({
-            pos: p.add(k.vec2(-r * 0.32, -r * 0.36)),
-            radius: r * 0.16,
-            color: blend(col, WHITE, 0.7),
-            opacity: 0.95,
-        }); // specular
+    // Orbs use the shared, memoised drawOrb (see ui.js) so the board and the
+    // how-to-play diagrams look identical and the per-frame shading is cached.
+    const orb = drawOrb;
+
+    // Colour-blind numerals: pre-lay-out each digit ONCE (a glyph + a dark
+    // shadow) so the per-frame board render just blits cached quads instead of
+    // re-shaping text for every occupied cell (that per-cell drawText was the
+    // colour-blind-mode lag). Positioned per cell with a cheap transform push.
+    const NUM_SIZE = Math.max(11, RADIUS * 1.25);
+    const cbGlyph = [];
+    for (let d = 0; d < 8; d++) {
+        cbGlyph[d] = k.formatText({
+            text: String(d + 1),
+            size: NUM_SIZE,
+            anchor: "center",
+            font: FONT_BOLD,
+            color: UI.text, // light fill…
+            outline: { width: Math.max(3, NUM_SIZE * 0.22), color: k.rgb(0, 0, 0) }, // …with a bold dark outline
+        });
     }
 
     // ----- rendering -----
     k.onDraw(() => {
         const t = k.time();
+        const cbMode = isColorblind(); // stamp a player numeral on each cell
         const wireCol = blend(wireSteel, colors[currentPlayer], 0.4); // desaturated tint
 
         // depth-shaded wireframe box
@@ -480,8 +651,12 @@ k.scene("game", (opts) => {
                 if (cell.count === 1) {
                     orb(p.add(k.vec2(shakeX, shakeY)), col, r);
                 } else {
-                    for (let i = 0; i < cell.count; i++) {
-                        const ang = t * 2 + (i * Math.PI * 2) / cell.count;
+                    // cap the orbiting orbs at critical mass — during a cascade a
+                    // cell transiently holds more than that for a few frames before
+                    // it explodes, and drawing 5-7 orbs there just burns draw calls
+                    const n = Math.min(cell.count, m);
+                    for (let i = 0; i < n; i++) {
+                        const ang = t * 2 + (i * Math.PI * 2) / n;
                         const off = k.vec2(
                             Math.cos(ang) * ORBIT_RADIUS + shakeX,
                             Math.sin(ang) * ORBIT_RADIUS * 0.6 + shakeY,
@@ -491,43 +666,86 @@ k.scene("game", (opts) => {
                 }
             }
         }
+
+        // colour-blind aid: player numerals in a SEPARATE pass so all the glyph
+        // quads batch together instead of forcing a texture switch (shapes <->
+        // font atlas) on every cell — that interleaving was the remaining lag.
+        if (cbMode) {
+            for (let x = 0; x < COLS; x++) {
+                for (let y = 0; y < ROWS; y++) {
+                    const cell = board[x][y];
+                    if (cell.count === 0) continue;
+                    const p = centers[x][y];
+                    k.pushTransform();
+                    k.pushTranslate(p.x, p.y);
+                    k.drawFormattedText(cbGlyph[cell.owner]);
+                    k.popTransform();
+                }
+            }
+        }
     });
 
     // ----- turn indicator (drawn on top) -----
     // The banner is centred but sized to sit clear of the Undo (left) and Exit
     // (right) corner buttons, so nothing overlaps at any player count.
+    const BANNER_W = 460;
+    const BANNER_MAXW = 388; // inner width available for the label group
+    // Fit the label into the banner: shrink the font, then truncate if it's still
+    // too wide (long custom names + bot persona + "thinking…"). Memoised by string
+    // so we only re-measure when the label actually changes.
+    let _bLabel = null;
+    let _bFit = null;
+    function fitBannerLabel(label) {
+        if (label === _bLabel) return _bFit;
+        let size = 27;
+        let text = label;
+        let ft = k.formatText({ text, size, font: FONT_BOLD });
+        while (ft.width > BANNER_MAXW && size > 15) {
+            size -= 1;
+            ft = k.formatText({ text, size, font: FONT_BOLD });
+        }
+        if (ft.width > BANNER_MAXW) {
+            while (text.length > 1 && k.formatText({ text: text + "…", size, font: FONT_BOLD }).width > BANNER_MAXW) {
+                text = text.slice(0, -1);
+            }
+            text += "…";
+            ft = k.formatText({ text, size, font: FONT_BOLD });
+        }
+        _bLabel = label;
+        _bFit = { text, size, width: ft.width };
+        return _bFit;
+    }
     k.onDraw(() => {
         const curCol = colors[currentPlayer];
         const cx = k.width() / 2;
         const baseLabel = isCPU[currentPlayer]
-            ? `Player ${currentPlayer + 1} · CPU`
-            : `Player ${currentPlayer + 1}`;
+            ? `${playerName(names, currentPlayer)} · ${botName(difficulty)}`
+            : playerName(names, currentPlayer);
         const label = gameOver
             ? "…"
             : resolving && isCPU[currentPlayer]
               ? baseLabel + " · thinking…"
               : baseLabel;
-        const bannerW = 430;
         k.drawRect({
             pos: k.vec2(cx, 60),
-            width: bannerW,
+            width: BANNER_W,
             height: 66,
             anchor: "center",
             radius: 12,
             color: UI.panel,
             outline: { width: 1.5, color: blend(UI.border, curCol, 0.6) },
         });
-        // colour chip + label, kept as a centred group inside the banner
-        k.drawCircle({ pos: k.vec2(cx - bannerW / 2 + 30, 60), radius: 9, color: curCol });
+        // colour chip + label as a single centred group, auto-fitted to the banner
+        const fit = fitBannerLabel(label);
         k.drawText({
-            text: label,
-            pos: k.vec2(cx + 16, 60),
-            size: 27,
-            width: bannerW - 90,
+            text: fit.text,
+            pos: k.vec2(cx + 12, 60),
+            size: fit.size,
             anchor: "center",
             font: FONT_BOLD,
             color: blend(UI.text, curCol, 0.35),
         });
+        k.drawCircle({ pos: k.vec2(cx + 12 - fit.width / 2 - 16, 60), radius: 9, color: curCol });
         // player dots (spacing shrinks so a full 8-player row still fits)
         const totals = eng.orbTotals(board, numPlayers);
         const gap = Math.min(60, Math.floor(760 / numPlayers));
@@ -553,6 +771,50 @@ k.scene("game", (opts) => {
         }
     });
 
+    // ----- countdown clock (only when the timer is enabled) -----
+    // A depleting pie that empties clockwise from the top, tinted to the current
+    // player and flushing red in the final seconds. Sits under the Exit button on
+    // the right, mirroring the Undo button on the left, clear of the board.
+    k.onDraw(() => {
+        if (timerSecs <= 0 || gameOver || inExitOverlay || resolving) return;
+        if (isCPU[currentPlayer]) return; // no clock on CPU turns
+        const cx = k.width() - 62;
+        const cy = 132;
+        const curCol = colors[currentPlayer];
+        const frac = Math.max(0, Math.min(1, timeLeft / timerSecs));
+        const low = timeLeft <= 3 && !paused;
+        const ringCol = low ? UI.danger : curCol;
+        const pulse = low ? 1 + Math.sin(k.time() * 12) * 0.05 : 1;
+        const R = 34 * pulse;
+        // face
+        k.drawCircle({
+            pos: k.vec2(cx, cy),
+            radius: R,
+            color: UI.panel,
+            outline: { width: 2, color: blend(UI.border, ringCol, 0.7) },
+        });
+        // depleting wedge (start at top, sweep clockwise)
+        if (frac > 0.001) {
+            k.drawCircle({
+                pos: k.vec2(cx, cy),
+                radius: R - 5,
+                color: ringCol,
+                opacity: 0.3,
+                start: -90,
+                end: -90 + 360 * frac,
+            });
+        }
+        // remaining whole seconds
+        k.drawText({
+            text: String(Math.ceil(timeLeft)),
+            pos: k.vec2(cx, cy),
+            size: 26,
+            anchor: "center",
+            font: FONT_BOLD,
+            color: blend(UI.text, ringCol, 0.4),
+        });
+    });
+
     // ----- top-bar corner buttons (clear of the centred banner) -----
     // Exit: right corner.
     const exitBtn = makeButton("✕", k.width() - 62, 60, 64, 56, { size: 30, layer: "ui" });
@@ -574,13 +836,34 @@ k.scene("game", (opts) => {
     }
 
     let overlayObjs = [];
+
+    // The pause panel carries a live timer slider. Its drag handlers are wired
+    // once here and act only while the panel (and thus the handle) is on screen,
+    // so repeated pause/resume cycles don't stack up stale listeners.
+    let timerHandle = null;     // the draggable knob (exists only while paused)
+    let timerSliderGeom = null; // { startX, w, place }
+    let timerDragging = false;
+    k.onMouseDown(() => {
+        if (!inExitOverlay || !timerSliderGeom || !timerHandle || !timerHandle.exists()) return;
+        if (timerHandle.isHovering()) timerDragging = true;
+        if (!timerDragging) return;
+        const { startX, w } = timerSliderGeom;
+        const x = Math.max(startX, Math.min(startX + w, k.mousePos().x));
+        setTimerIdx(Math.round(((x - startX) / w) * TIMER_OFF));
+        timerSliderGeom.place();
+    });
+    k.onMouseRelease(() => {
+        timerDragging = false;
+        persistTimerPref(); // write the chosen timer to prefs once, on release
+    });
+
     function showConfirmOverlay() {
         inExitOverlay = true;
         paused = true; // freeze the game while the menu is open
         exitBtn.hidden = true;
         const totals = eng.orbTotals(board, numPlayers);
         const cy = k.height() / 2;
-        const h = 470 + numPlayers * 44;
+        const h = 520 + numPlayers * 44;
 
         overlayObjs.push(
             k.add([
@@ -606,13 +889,114 @@ k.scene("game", (opts) => {
             k.pos(0, -h / 2 + 46),
             k.anchor("center"),
         ]);
+        // stats table (box-relative coords): colour dot + name (left), orbs and
+        // peak right-aligned into fixed columns so every row lines up
+        const xDot = -250;
+        const xName = -228;
+        const xOrbs = 150;
+        const xPeak = 250;
+        box.add([
+            k.text("ORBS", { size: 15, letterSpacing: 1, font: FONT_BOLD }),
+            k.color(UI.textDim),
+            k.pos(xOrbs, -h / 2 + 84),
+            k.anchor("right"),
+        ]);
+        box.add([
+            k.text("PEAK", { size: 15, letterSpacing: 1, font: FONT_BOLD }),
+            k.color(UI.textDim),
+            k.pos(xPeak, -h / 2 + 84),
+            k.anchor("right"),
+        ]);
         for (let p = 0; p < numPlayers; p++) {
+            const ry = -h / 2 + 116 + p * 40;
             box.add([
-                k.text(`Player ${p + 1}${isCPU[p] ? " · CPU" : ""}: ${totals[p]}`, { size: 25 }),
-                k.color(blend(UI.text, colors[p], 0.55)),
-                k.pos(0, -h / 2 + 100 + p * 42),
+                k.circle(8),
+                k.pos(xDot, ry),
                 k.anchor("center"),
+                k.color(eliminated.has(p) ? dim(colors[p], 0.4) : colors[p]),
             ]);
+            box.add([
+                k.text(`${playerName(names, p)}${isCPU[p] ? " · " + botName(difficulty) : ""}`, { size: 23 }),
+                k.color(blend(UI.text, colors[p], 0.5)),
+                k.pos(xName, ry),
+                k.anchor("left"),
+            ]);
+            box.add([
+                k.text(String(totals[p]), { size: 23, font: FONT_BOLD }),
+                k.color(UI.text),
+                k.pos(xOrbs, ry),
+                k.anchor("right"),
+            ]);
+            box.add([
+                k.text(String(peakOrbs[p]), { size: 23 }),
+                k.color(UI.textDim),
+                k.pos(xPeak, ry),
+                k.anchor("right"),
+            ]);
+        }
+
+        // ---- live turn-timer slider (change or disable mid-game) ----
+        {
+            const cx = k.width() / 2;
+            const w = 460;
+            const startX = cx - w / 2;
+            const yLabel = cy + (-h / 2 + 130 + numPlayers * 42);
+            const yTrack = yLabel + 42;
+            const label = k.add([
+                k.text("", { size: 24, font: FONT_BOLD }),
+                k.color(UI.text),
+                k.pos(cx, yLabel),
+                k.anchor("center"),
+                k.layer("overlay"),
+            ]);
+            overlayObjs.push(label);
+            overlayObjs.push(
+                k.add([
+                    k.rect(w, 6, { radius: 3 }),
+                    k.pos(cx, yTrack),
+                    k.anchor("center"),
+                    k.color(UI.border),
+                    k.layer("overlay"),
+                ]),
+            );
+            const fill = k.add([
+                k.rect(1, 6, { radius: 3 }),
+                k.pos(startX, yTrack),
+                k.anchor("left"),
+                k.color(UI.accent),
+                k.layer("overlay"),
+            ]);
+            overlayObjs.push(fill);
+            const handle = k.add([
+                k.circle(16),
+                k.pos(startX, yTrack),
+                k.anchor("center"),
+                k.color(UI.accent),
+                k.outline(2, UI.bg),
+                k.area(),
+                k.layer("overlay"),
+            ]);
+            handle.onHover(() => k.setCursor("pointer"));
+            handle.onHoverEnd(() => k.setCursor("default"));
+            overlayObjs.push(handle);
+            overlayObjs.push(
+                k.add([
+                    k.text("when it runs out, a random orb is auto-placed for you", { size: 17 }),
+                    k.color(UI.textDim),
+                    k.pos(cx, yTrack + 28),
+                    k.anchor("center"),
+                    k.layer("overlay"),
+                ]),
+            );
+            function place() {
+                const r = timerIdx / TIMER_OFF;
+                handle.pos.x = startX + r * w;
+                fill.width = Math.max(1, r * w);
+                label.text = `Turn Timer: ${timerLabel(timerIdx)}`;
+            }
+            timerHandle = handle;
+            timerSliderGeom = { startX, w, place };
+            place();
         }
 
         // Save to device  |  Copy shareable link — two independent actions
@@ -681,8 +1065,12 @@ k.scene("game", (opts) => {
     }
     function destroyOverlay() {
         removeSaveModal();
+        persistTimerPref(); // safety: make sure a timer change is saved on close
         overlayObjs.forEach((o) => o.destroy());
         overlayObjs = [];
+        timerHandle = null; // slider knob is gone; drag handlers go dormant
+        timerSliderGeom = null;
+        timerDragging = false;
         inExitOverlay = false;
         paused = false; // resume the game
         exitBtn.hidden = false;

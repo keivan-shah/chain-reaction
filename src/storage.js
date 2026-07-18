@@ -3,6 +3,24 @@ import { decodeState } from "./state.js";
 
 const SAVE_KEY = "cr_save";
 const SAVE_TIME_KEY = "cr_save_time";
+const HOWTO_KEY = "cr_howto_seen";
+
+// Whether the player has seen the How-to-Play screen (so we only auto-show it the
+// very first time; it's always reachable from the menu's "?" button afterwards).
+export function hasSeenHowto() {
+    try {
+        return !!localStorage.getItem(HOWTO_KEY);
+    } catch (e) {
+        return false;
+    }
+}
+export function markHowtoSeen() {
+    try {
+        localStorage.setItem(HOWTO_KEY, "1");
+    } catch (e) {
+        /* ignore */
+    }
+}
 
 export function saveSlotExists() {
     try {

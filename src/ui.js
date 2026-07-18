@@ -25,6 +25,45 @@ export function blend(a, b, t) {
     );
 }
 
+// A shaded sphere lit from the upper-left: ambient glow → dark rim → mid body →
+// lit cap → specular hotspot. Shared by the board renderer and the how-to-play
+// diagrams so orbs look identical everywhere. Call inside an onDraw.
+const _BLACK = k.rgb(0, 0, 0);
+const _WHITE = k.rgb(255, 255, 255);
+// The rim/cap/specular tints depend only on the player colour, so memoise them
+// (there are ~8 colours) instead of running 3 blends -> 3 new k.rgb per orb, per
+// frame — the board can draw hundreds of orbs a frame on the Large grid.
+const _shadeCache = new Map();
+function orbShades(col) {
+    const key = (col.r << 16) | (col.g << 8) | col.b;
+    let s = _shadeCache.get(key);
+    if (!s) {
+        s = { rim: blend(col, _BLACK, 0.42), cap: blend(col, _WHITE, 0.26), spec: blend(col, _WHITE, 0.7) };
+        _shadeCache.set(key, s);
+    }
+    return s;
+}
+export function drawOrb(p, col, r) {
+    const s = orbShades(col);
+    k.drawCircle({ pos: p, radius: r * 1.5, color: col, opacity: 0.1 }); // ambient glow
+    k.drawCircle({ pos: p, radius: r, color: s.rim }); // dark rim
+    k.drawCircle({ pos: p.add(k.vec2(-r * 0.16, -r * 0.18)), radius: r * 0.85, color: col }); // body
+    k.drawCircle({ pos: p.add(k.vec2(-r * 0.26, -r * 0.3)), radius: r * 0.5, color: s.cap }); // lit cap
+    k.drawCircle({
+        pos: p.add(k.vec2(-r * 0.32, -r * 0.36)),
+        radius: r * 0.16,
+        color: s.spec,
+        opacity: 0.95,
+    }); // specular
+}
+
+// A player's display name: their custom name if set, else "Player N". Shared by
+// the HUD, pause panel and winner scoreboard so the fallback is consistent.
+export function playerName(names, i) {
+    const n = names && names[i] != null ? String(names[i]).trim() : "";
+    return n || `Player ${i + 1}`;
+}
+
 // A quick fade-in used on every scene for a polished transition.
 export function fadeIn(dur = 0.35) {
     const cover = k.add([

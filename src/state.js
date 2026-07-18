@@ -113,6 +113,9 @@ export function decodeState(str) {
         const dims = GRID_SIZES[size];
         const total = dims.cols * dims.rows;
         if (numPlayers < 2 || numPlayers > 8) return null;
+        // reject corrupt/edited codes rather than crashing the game scene later
+        if (!(cpuCount >= 0 && cpuCount <= numPlayers)) return null;
+        if (!(currentPlayer >= 0 && currentPlayer < numPlayers)) return null;
 
         const values = new Array(total).fill(0);
         const body = str.slice(10);
@@ -147,7 +150,9 @@ export function decodeState(str) {
                 const v = values[k++];
                 const ownerCode = Math.floor(v / 5);
                 const count = v % 5;
-                board[x][y] = { count, owner: ownerCode === 0 ? -1 : ownerCode - 1 };
+                const owner = ownerCode === 0 ? -1 : ownerCode - 1;
+                if (owner >= numPlayers) return null; // orb owned by a nonexistent player
+                board[x][y] = { count, owner };
             }
         }
         return {
