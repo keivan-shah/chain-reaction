@@ -8,12 +8,16 @@ k.scene("winner", ({ winner, numPlayers, isCPU, totals, peaks, cpuCount, difficu
     const winColor = colors[winner];
     k.setCursor("default");
 
+    // shrink the winner's name to fit on screen (long custom names + bot persona
+    // would otherwise run off the edges at the full 84px)
+    const winLabel = `${playerName(names, winner)}${isCPU && isCPU[winner] ? " · " + botName(difficulty) : ""}`;
+    const maxW = k.width() - 60;
+    let winSize = 84;
+    while (winSize > 34 && k.formatText({ text: winLabel, size: winSize, letterSpacing: 2, font: FONT_BOLD }).width > maxW) {
+        winSize -= 2;
+    }
     k.add([
-        k.text(`${playerName(names, winner)}${isCPU && isCPU[winner] ? " · " + botName(difficulty) : ""}`, {
-            size: 84,
-            letterSpacing: 2,
-            font: FONT_BOLD,
-        }),
+        k.text(winLabel, { size: winSize, letterSpacing: 2, font: FONT_BOLD }),
         k.pos(k.width() / 2, k.height() / 2 - 150),
         k.anchor("center"),
         k.color(blend(UI.text, winColor, 0.55)),

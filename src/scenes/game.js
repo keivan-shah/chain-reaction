@@ -9,6 +9,7 @@ import { cfg, savePrefs } from "../prefs.js";
 import { writeSaveSlot, buildResumeUrl, clearSavedGame, showSaveModal, removeSaveModal } from "../storage.js";
 import { removeNameModal } from "../namedialog.js";
 import { removeMusicModal } from "../musicmodal.js";
+import { removeCreditFooter } from "../credits.js";
 import { botName } from "../bots.js";
 import { recordMove, recordGameEnd } from "../stats.js";
 import { buzzBurst, buzzWin } from "../haptics.js";
@@ -18,6 +19,7 @@ k.scene("game", (opts) => {
     fadeIn();
     removeNameModal(); // never let a menu dialog linger into the game
     removeMusicModal();
+    removeCreditFooter();
     const saved = opts.saved || null;
     const numPlayers = saved ? saved.numPlayers : opts.numPlayers;
     const cpuCount = saved ? saved.cpuCount : opts.cpuCount;
@@ -863,7 +865,17 @@ k.scene("game", (opts) => {
         exitBtn.hidden = true;
         const totals = eng.orbTotals(board, numPlayers);
         const cy = k.height() / 2;
-        const h = 520 + numPlayers * 44;
+        // sequential vertical offsets (from the box top) so everything is evenly
+        // spaced regardless of player count — avoids a gap in the middle
+        const rowsEnd = 128 + (numPlayers - 1) * 40; // last stats row
+        const oTimer = rowsEnd + 58; // timer slider label
+        const oHint = oTimer + 70 + 46; // save/continue hint (after label+track+caption)
+        const oSave = oHint + 52; // Save / Copy row
+        const oRestart = oSave + 76; // Restart row
+        const oQuit = oRestart + 76; // Quit / Resume row
+        const h = oQuit + 74;
+        const yAbs = (o) => cy - h / 2 + o; // absolute screen y for offset o
+        const boxY = (o) => o - h / 2; // box-relative y for offset o
 
         overlayObjs.push(
             k.add([
@@ -886,7 +898,7 @@ k.scene("game", (opts) => {
         box.add([
             k.text("Paused", { size: 38, font: FONT_BOLD }),
             k.color(UI.text),
-            k.pos(0, -h / 2 + 46),
+            k.pos(0, boxY(46)),
             k.anchor("center"),
         ]);
         // stats table (box-relative coords): colour dot + name (left), orbs and
@@ -898,17 +910,17 @@ k.scene("game", (opts) => {
         box.add([
             k.text("ORBS", { size: 15, letterSpacing: 1, font: FONT_BOLD }),
             k.color(UI.textDim),
-            k.pos(xOrbs, -h / 2 + 84),
+            k.pos(xOrbs, boxY(96)),
             k.anchor("right"),
         ]);
         box.add([
             k.text("PEAK", { size: 15, letterSpacing: 1, font: FONT_BOLD }),
             k.color(UI.textDim),
-            k.pos(xPeak, -h / 2 + 84),
+            k.pos(xPeak, boxY(96)),
             k.anchor("right"),
         ]);
         for (let p = 0; p < numPlayers; p++) {
-            const ry = -h / 2 + 116 + p * 40;
+            const ry = boxY(128 + p * 40);
             box.add([
                 k.circle(8),
                 k.pos(xDot, ry),
@@ -940,7 +952,7 @@ k.scene("game", (opts) => {
             const cx = k.width() / 2;
             const w = 460;
             const startX = cx - w / 2;
-            const yLabel = cy + (-h / 2 + 130 + numPlayers * 42);
+            const yLabel = yAbs(oTimer);
             const yTrack = yLabel + 42;
             const label = k.add([
                 k.text("", { size: 24, font: FONT_BOLD }),
@@ -1007,10 +1019,10 @@ k.scene("game", (opts) => {
                 align: "center",
             }),
             k.color(UI.textDim),
-            k.pos(0, h / 2 - 250),
+            k.pos(0, boxY(oHint)),
             k.anchor("center"),
         ]);
-        const saveBtn = makeButton("Save", k.width() / 2 - 150, cy + h / 2 - 190, 260, 60, {
+        const saveBtn = makeButton("Save", k.width() / 2 - 150, yAbs(oSave), 260, 60, {
             base: UI.panelHi,
             outline: UI.good,
             textColor: UI.good,
@@ -1026,7 +1038,7 @@ k.scene("game", (opts) => {
             });
         });
         overlayObjs.push(saveBtn);
-        const copyBtn = makeButton("⤴  Copy Link", k.width() / 2 + 150, cy + h / 2 - 190, 260, 60, {
+        const copyBtn = makeButton("⤴  Copy Link", k.width() / 2 + 150, yAbs(oSave), 260, 60, {
             base: UI.panelHi,
             outline: UI.accent,
             textColor: UI.accent,
@@ -1040,8 +1052,36 @@ k.scene("game", (opts) => {
         });
         overlayObjs.push(copyBtn);
 
+        // Restart the same match from scratch — two taps to confirm
+        let restartArmed = false;
+        const restartBtn = makeButton("Restart game", k.width() / 2, yAbs(oRestart), 420, 60, {
+            base: UI.panel,
+            outline: blend(UI.border, UI.danger, 0.5),
+            textColor: blend(UI.text, UI.danger, 0.4),
+            size: 25,
+            layer: "overlay",
+        });
+        restartBtn.onClick(() => {
+            const lbl = restartBtn.children[0];
+            if (!restartArmed) {
+                restartArmed = true;
+                lbl.text = "Tap again to restart";
+                k.wait(2.5, () => {
+                    if (restartBtn.exists() && restartArmed) {
+                        restartArmed = false;
+                        lbl.text = "Restart game";
+                    }
+                });
+                return;
+            }
+            removeSaveModal();
+            clearSavedGame(); // abandon the current match's save
+            k.go("game", { numPlayers, cpuCount, difficulty, size, randomOn, timer: timerIdx, names });
+        });
+        overlayObjs.push(restartBtn);
+
         // Quit / Resume
-        const yes = makeButton("Quit to Menu", k.width() / 2 - 150, cy + h / 2 - 55, 260, 64, {
+        const yes = makeButton("Quit to Menu", k.width() / 2 - 150, yAbs(oQuit), 260, 64, {
             base: UI.panel,
             outline: blend(UI.border, UI.danger, 0.5),
             textColor: blend(UI.text, UI.danger, 0.5),
@@ -1053,7 +1093,7 @@ k.scene("game", (opts) => {
             k.go("menu");
         });
         overlayObjs.push(yes);
-        const no = makeButton("Resume", k.width() / 2 + 150, cy + h / 2 - 55, 260, 64, {
+        const no = makeButton("Resume", k.width() / 2 + 150, yAbs(oQuit), 260, 64, {
             base: UI.good,
             textColor: k.rgb(10, 16, 12),
             outline: blend(UI.good, k.rgb(255, 255, 255), 0.3),

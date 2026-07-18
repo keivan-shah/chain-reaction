@@ -106,7 +106,7 @@ export function showMusicModal(onChange) {
         card.appendChild(r);
         rows.push({ dot, now, r, mode });
     }
-    addRow("Shuffle all", -1);
+    addRow("🔀 Shuffle all", -1);
     audio.getTrackNames().forEach((name, i) => addRow(name, i));
 
     function syncTracks() {

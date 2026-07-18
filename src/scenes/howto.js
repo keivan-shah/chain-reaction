@@ -6,6 +6,7 @@ import { k, FONT_BOLD } from "../k.js";
 import { colors, UI } from "../theme.js";
 import { makeButton, fadeIn, blend, dim, drawOrb } from "../ui.js";
 import { markHowtoSeen } from "../storage.js";
+import { showCreditFooter, removeCreditFooter } from "../credits.js";
 import { BOT_LIST } from "../bots.js";
 
 k.scene("howto", () => {
@@ -311,8 +312,15 @@ k.scene("howto", () => {
         textColor: k.rgb(10, 14, 22),
         outline: k.rgb(150, 195, 255),
     });
-    playBtn.onClick(() => k.go("menu"));
-    k.onKeyPress("escape", () => k.go("menu"));
+    const leave = () => {
+        removeCreditFooter();
+        k.go("menu");
+    };
+    playBtn.onClick(leave);
+    k.onKeyPress("escape", leave);
+
+    // credit + contact/contribute links, as a real DOM overlay (clickable links)
+    showCreditFooter();
 
     build();
 });

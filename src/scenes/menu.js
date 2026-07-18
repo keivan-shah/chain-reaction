@@ -5,6 +5,7 @@ import { cfg, savePrefs } from "../prefs.js";
 import { saveSlotExists, readSaveSlot, savedAtLabel, removeSaveModal, clearUrl } from "../storage.js";
 import { showNameModal, removeNameModal } from "../namedialog.js";
 import { showMusicModal, removeMusicModal } from "../musicmodal.js";
+import { removeCreditFooter } from "../credits.js";
 import { isInstallAvailable, triggerInstall } from "../pwa.js";
 import { GRID_SIZES, clampSize } from "../grids.js";
 import { TIMER_OFF, timerLabel, clampTimer } from "../timer.js";
@@ -16,6 +17,7 @@ k.scene("menu", () => {
     removeSaveModal();
     removeNameModal();
     removeMusicModal();
+    removeCreditFooter();
     clearUrl(); // the home screen shouldn't carry a game's resume link
     fadeIn();
     let uiRefs = {};
@@ -183,9 +185,9 @@ k.scene("menu", () => {
     const presetBtns = presets.map((p, i) => {
         const col = i % 2;
         const row = Math.floor(i / 2);
-        const bx = k.width() / 2 + (col === 0 ? -160 : 160);
-        const by = 400 + row * 90;
-        const b = makeButton(p.label(), bx, by, 290, 70, { size: 24 });
+        const bx = k.width() / 2 + (col === 0 ? -168 : 168);
+        const by = 398 + row * 100;
+        const b = makeButton(p.label(), bx, by, 288, 68, { size: 24 });
         b.onClick(() => {
             cfg.numPlayers = p.np;
             cfg.cpuCount = p.cpu;
@@ -193,7 +195,7 @@ k.scene("menu", () => {
         });
         return { b, label: p.label };
     });
-    const allCpuBtn = makeButton("", k.width() / 2, 580, 290, 60, { size: 24 });
+    const allCpuBtn = makeButton("", k.width() / 2, 600, 288, 60, { size: 24 });
     allCpuBtn.onClick(() => {
         cfg.cpuCount = cfg.numPlayers;
         commit();
@@ -205,57 +207,60 @@ k.scene("menu", () => {
     }
 
     // ---- Custom sliders (players + cpu + grid size) ----
+    // Tap ANYWHERE on the track to jump to that value, or drag — the whole track
+    // is a tall invisible hit target so it's easy to hit on a phone. A ± stepper
+    // on each side nudges by one for precise, tap-only control.
     function makeSlider(labelFn, y, getVal, setVal, min, max) {
-        const trackW = 420;
-        const startX = k.width() / 2 - trackW / 2;
-        const label = k.add([
-            k.text("", { size: 28 }),
-            k.pos(k.width() / 2, y - 42),
-            k.anchor("center"),
-            k.color(UI.text),
-        ]);
-        k.add([
-            k.rect(trackW, 6, { radius: 3 }),
-            k.pos(k.width() / 2, y),
-            k.anchor("center"),
-            k.color(UI.border),
-        ]);
-        const handle = k.add([
-            k.circle(18),
-            k.pos(startX, y),
-            k.anchor("center"),
-            k.color(UI.accent),
-            k.area(),
-            k.outline(2, UI.bg),
-        ]);
-        let dragging = false;
-        handle.onHover(() => k.setCursor("pointer"));
-        handle.onHoverEnd(() => k.setCursor("default"));
+        const trackW = 380;
+        const cx = k.width() / 2;
+        const startX = cx - trackW / 2;
+        const label = k.add([k.text("", { size: 28 }), k.pos(cx, y - 44), k.anchor("center"), k.color(UI.text)]);
+        // track + filled portion
+        k.add([k.rect(trackW, 8, { radius: 4 }), k.pos(cx, y), k.anchor("center"), k.color(UI.border)]);
+        const fill = k.add([k.rect(1, 8, { radius: 4 }), k.pos(startX, y), k.anchor("left"), k.color(UI.accent)]);
+        const handle = k.add([k.circle(20), k.pos(startX, y), k.anchor("center"), k.color(UI.accent), k.outline(3, UI.bg)]);
+        // big invisible hit strip covering the track for tap + drag
+        const hit = k.add([k.rect(trackW + 16, 54), k.pos(cx, y), k.anchor("center"), k.area(), k.opacity(0)]);
+        hit.onHover(() => k.setCursor("pointer"));
+        hit.onHoverEnd(() => k.setCursor("default"));
+
         function place() {
             const ratio = (getVal() - min) / (max - min || 1);
             handle.pos.x = startX + ratio * trackW;
+            fill.width = Math.max(1, ratio * trackW);
             label.text = labelFn();
         }
-        // grab on the initial press only — using onMouseDown (every held frame)
-        // would let a drag latch onto another slider's handle it passes over
+        function setFromMouse() {
+            const x = Math.max(startX, Math.min(startX + trackW, k.mousePos().x));
+            setVal(min + Math.round(((x - startX) / trackW) * (max - min)));
+            refresh(); // visual only — persisted on release
+        }
+        let dragging = false;
+        // press anywhere on the track: jump to it and start dragging
         k.onMousePress(() => {
-            if (handle.isHovering()) dragging = true;
+            if (hit.isHovering()) {
+                dragging = true;
+                setFromMouse();
+            }
         });
-        // persist once when the drag ends rather than ~60x/sec while dragging
+        k.onMouseDown(() => {
+            if (dragging) setFromMouse();
+        });
         k.onMouseRelease(() => {
             if (dragging) {
                 dragging = false;
                 savePrefs();
             }
         });
-        handle.onUpdate(() => {
-            if (dragging) {
-                const x = Math.max(startX, Math.min(startX + trackW, k.mousePos().x));
-                const ratio = (x - startX) / trackW;
-                setVal(min + Math.round(ratio * (max - min)));
-                refresh(); // visual only (no save) — see savePrefs() on release
-            }
-        });
+
+        // ± steppers (tap-only precise control)
+        function step(delta) {
+            setVal(Math.max(min, Math.min(max, getVal() + delta)));
+            commit();
+        }
+        makeButton("−", startX - 44, y, 52, 52, { size: 34, outline: UI.border }).onClick(() => step(-1));
+        makeButton("+", startX + trackW + 44, y, 52, 52, { size: 30, outline: UI.border }).onClick(() => step(1));
+
         return { place, handle, label };
     }
 
@@ -312,8 +317,8 @@ k.scene("menu", () => {
     ]);
     const diffs = ["Easy", "Medium", "Hard"];
     const diffBtns = diffs.map((d, i) => {
-        const bx = k.width() / 2 + (i - 1) * 200;
-        const b = makeButton(d, bx, 1180, 180, 58, { size: 30 });
+        const bx = k.width() / 2 + (i - 1) * 210;
+        const b = makeButton(d, bx, 1180, 172, 58, { size: 30 });
         b.onClick(() => {
             cfg.difficulty = d;
             commit();
@@ -339,12 +344,12 @@ k.scene("menu", () => {
         return b;
     }
     const tY = 1290;
-    const tX = (i) => k.width() / 2 + (i - 1) * 224;
-    const randomToggle = compactToggle("Random", tX(0), tY, 210, () => cfg.randomOn, (v) => (cfg.randomOn = v));
+    const tX = (i) => k.width() / 2 + (i - 1) * 246;
+    const randomToggle = compactToggle("Random", tX(0), tY, 200, () => cfg.randomOn, (v) => (cfg.randomOn = v));
     // Sound button opens a popup with every audio option (volume, SFX, music, track)
-    const soundBtn = makeButton("Sound", tX(1), tY, 210, 56, { size: 24, outline: UI.border, textColor: UI.text });
+    const soundBtn = makeButton("Sound", tX(1), tY, 200, 56, { size: 24, outline: UI.border, textColor: UI.text });
     soundBtn.onClick(() => showMusicModal(() => savePrefs()));
-    const hapticsToggle = compactToggle("Haptics", tX(2), tY, 210, () => isHapticsOn(), (v) => setHaptics(v));
+    const hapticsToggle = compactToggle("Haptics", tX(2), tY, 200, () => isHapticsOn(), (v) => setHaptics(v));
 
     // ---- Play button ----
     const playBtn = makeButton("PLAY", k.width() / 2, 1400, 340, 84, {
